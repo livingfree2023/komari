@@ -41,6 +41,7 @@ SYSTEMCTL_BIN=$(command -v systemctl || true)
 JOURNALCTL_BIN=$(command -v journalctl || true)
 AWK_BIN=$(command -v awk || true)
 SED_BIN=$(command -v sed || true)
+GREP_BIN=$(command -v grep || true)
 
 # Show banner
 show_banner() {
@@ -145,71 +146,81 @@ set_local_version() {
 # Outputs: tag on stdout (normalized without leading 'v'), sets global LATEST_DOWNLOAD_URL
 LATEST_DOWNLOAD_URL=""
 get_latest_release_info() {
-    local arch
+    local arch tag json code candidate_url url api_message
+
     arch=$(detect_arch)
 
-    # ensure curl path (may have been installed earlier)
+    # ensure curl
     CURL_BIN=$(command -v curl || true)
     if [ -z "$CURL_BIN" ]; then
         log_error "curl 未安装，无法检查更新"
         return 1
     fi
 
-    # Support optional GitHub token to avoid rate limits
+    # optional token support
     local curl_auth_args=()
     if [ -n "$GITHUB_TOKEN" ]; then
         curl_auth_args+=(-H "Authorization: token $GITHUB_TOKEN")
     fi
 
     log_step "从 GitHub 查询最新发布信息..."
-    # get JSON
-    local json
     json=$($CURL_BIN -s "${curl_auth_args[@]}" "$GITHUB_API")
     if [ -z "$json" ]; then
-        log_error "无法从 GitHub 获取 release 信息"
+        log_error "无法从 GitHub 获取 release 信息 (空响应)"
         return 1
     fi
 
-    # Extract tag_name (portable)
-    local tag
-    tag=$(echo "$json" | awk -F'"' '/"tag_name":/ {print $4; exit}')
-    if [ -z "$tag" ]; then
-        log_error "未能解析最新版本标签"
-        return 1
+    # If API returned an error message (rate limit or not found), capture it but continue to try deterministic URL later
+    api_message=$(echo "$json" | awk -F'"' '/"message"\s*:/ {print $4; exit}')
+    if [ -n "$api_message" ]; then
+        log_info "GitHub API message: $api_message"
+        # don't fail immediately — try deterministic URL fallback
     fi
-    # normalize tag (strip leading v if present)
-    tag=${tag#v}
 
-    # Find asset browser_download_url that matches komari-linux-<arch> (prefer exact arch)
-    local url
+    # Extract tag_name using awk (portable)
+    tag=$(echo "$json" | awk -F'"' '/"tag_name"\s*:/ {print $4; exit}' || true)
+    tag=${tag#v}  # normalize
+
+    # If we have a tag, build deterministic URL and verify it
+    if [ -n "$tag" ]; then
+        candidate_url="https://github.com/komari-monitor/komari/releases/download/${tag}/komari-linux-${arch}"
+        # check HTTP status (follow redirects)
+        code=$($CURL_BIN -s -o /dev/null -w "%{http_code}" -L "$candidate_url" || echo "")
+        if [ "$code" = "200" ]; then
+            LATEST_DOWNLOAD_URL="$candidate_url"
+            echo "$tag"
+            return 0
+        else
+            log_info "构造的 URL 返回 HTTP ${code:-NA}, 将尝试从 release JSON 查找资产"
+        fi
+    fi
+
+    # Parse assets (name -> browser_download_url) using awk to pair name and url
     url=$(echo "$json" | awk -F'"' -v arch="$arch" '
-        /"browser_download_url":/ {
-            u = $4
-            if (u ~ "komari-linux-"arch) { print u; exit }
-            if (u ~ "komari-linux" && fallback == "") fallback = u
+        /"name"\s*:/ { name=$4; next }
+        /"browser_download_url"\s*:/ {
+            bdurl=$4
+            if (name == "komari-linux-"arch) { print bdurl; exit }
+            if (name ~ /^komari-linux/ && fallback == "") fallback = bdurl
         }
-        END { if (url == "" && fallback != "") print fallback }
-    ' )
+        END { if (fallback != "") print fallback }
+    ' | head -n1)
 
-    # If awk didn't print (older awk may not set fallback in this manner), do a simpler scan
+    # Grep fallback (very tolerant)
     if [ -z "$url" ]; then
-        # simpler grep/awk fallback
-        url=$(echo "$json" | grep -Eo '"browser_download_url":[[:space:]]*"[^"]+' | awk -F'"' -v arch="$arch" '
-            {
-                u = $4
-                if (u ~ "komari-linux-"arch) { print u; exit }
-                if (u ~ "komari-linux" && fallback == "") fallback = u
-            }
-            END { if (fallback != "") print fallback }
-        ')
+        url=$(echo "$json" | grep -o '"browser_download_url"[[:space:]]*:[[:space:]]*"[^"]*komari-linux[^"]*' | sed -E 's/.*"([^"]+)".*/\1/' | head -n1 || true)
     fi
 
-    if [ -z "$url" ]; then
-        log_error "未找到适用于架构 $arch 的发布资产"
-        return 1
+    if [ -n "$url" ]; then
+        LATEST_DOWNLOAD_URL="$url"
+        # echo tag if we have it (may be empty)
+        echo "$tag"
+        return 0
     fi
 
-    LATEST_DOWNLOAD_URL="$url"
+    # Final fallback: generic releases/latest/download redirect (should work)
+    log_info "未在 release assets 中找到匹配的文件，使用 releases/latest/download 回退 URL"
+    LATEST_DOWNLOAD_URL="https://github.com/komari-monitor/komari/releases/latest/download/komari-linux-${arch}"
     echo "$tag"
     return 0
 }
@@ -410,39 +421,36 @@ upgrade_komari() {
         return 1
     fi
 
+    # --- NEW: check remote version before stopping the service ---
+    log_step "检查远程版本..."
+    local latest_tag
+    if ! latest_tag=$(get_latest_release_info); then
+        log_error "无法获取最新发布信息，取消升级"
+        return 1
+    fi
+    latest_tag=${latest_tag#v}
+
+    local local_tag
+    local_tag=$(get_local_version)
+    local_tag=${local_tag#v}
+
+    if [ -n "$local_tag" ] && [ "$local_tag" = "$latest_tag" ]; then
+        log_info "已是最新版本：$local_tag"
+        return 0
+    fi
+    # --- end new check ---
+
+    # ensure we have a download URL
+    if [ -z "$LATEST_DOWNLOAD_URL" ]; then
+        log_error "下载 URL 为空，取消升级"
+        return 1
+    fi
+
     log_step "停止 Komari 服务..."
     $SYSTEMCTL_BIN stop ${SERVICE_NAME}.service
 
     log_step "备份当前二进制文件..."
     cp "$BINARY_PATH" "${BINARY_PATH}.backup.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
-
-    # Get latest info
-    local latest_tag
-    if ! latest_tag=$(get_latest_release_info); then
-        log_error "无法获取最新发布信息，取消升级"
-        # restore from the most recent backup (if present)
-        latest_backup=$(ls -1t "${BINARY_PATH}.backup."* 2>/dev/null | head -n1)
-        if [ -n "$latest_backup" ]; then
-            mv "$latest_backup" "$BINARY_PATH" 2>/dev/null || log_error "从备份恢复失败: $latest_backup"
-            log_info "已从备份恢复: $latest_backup"
-        else
-            log_error "未找到备份文件，无法恢复二进制"
-        fi
-        $SYSTEMCTL_BIN start ${SERVICE_NAME}.service
-        return 1
-    fi
-
-    # ensure URL is non-empty
-    if [ -z "$LATEST_DOWNLOAD_URL" ]; then
-        log_error "下载 URL 为空，取消升级"
-        # try to restore backup
-        latest_backup=$(ls -1t "${BINARY_PATH}.backup."* 2>/dev/null | head -n1)
-        if [ -n "$latest_backup" ]; then
-            mv "$latest_backup" "$BINARY_PATH" 2>/dev/null || true
-        fi
-        $SYSTEMCTL_BIN start ${SERVICE_NAME}.service
-        return 1
-    fi
 
     log_step "下载最新版本..."
     if ! $CURL_BIN -L -o "$BINARY_PATH" "$LATEST_DOWNLOAD_URL"; then
