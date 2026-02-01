@@ -31,6 +31,15 @@ SERVICE_NAME="komari"
 BINARY_PATH="$INSTALL_DIR/komari"
 DEFAULT_PORT="25774"
 LISTEN_PORT=""
+AUTO_MODE=0
+GITHUB_API="https://api.github.com/repos/komari-monitor/komari/releases/latest"
+VERSION_FILE="$INSTALL_DIR/VERSION"
+
+# Resolve command paths (use full paths for cron)
+CURL_BIN=$(command -v curl || true)
+SYSTEMCTL_BIN=$(command -v systemctl || true)
+JOURNALCTL_BIN=$(command -v journalctl || true)
+AWK_BIN=$(command -v awk || true)
 
 # Show banner
 show_banner() {
@@ -52,7 +61,7 @@ check_root() {
 
 # Check for systemd
 check_systemd() {
-    if ! command -v systemctl >/dev/null 2>&1; then
+    if [ -z "$SYSTEMCTL_BIN" ]; then
         return 1
     else
         return 0
@@ -91,6 +100,69 @@ is_installed() {
     fi
 }
 
+# Read local installed version (tag) from VERSION file
+get_local_version() {
+    if [ -f "$VERSION_FILE" ]; then
+        cat "$VERSION_FILE"
+    else
+        echo ""
+    fi
+}
+
+# Save local version (tag)
+set_local_version() {
+    local tag="$1"
+    mkdir -p "$INSTALL_DIR"
+    echo "$tag" > "$VERSION_FILE"
+}
+
+# Query GitHub Releases API for latest tag and asset URL for our arch
+# Output:
+#   LATEST_TAG (stdout) and sets global LATEST_DOWNLOAD_URL
+LATEST_DOWNLOAD_URL=""
+get_latest_release_info() {
+    local arch
+    arch=$(detect_arch)
+    if [ -z "$CURL_BIN" ]; then
+        log_error "curl 未安装，无法检查更新"
+        return 1
+    fi
+
+    log_step "从 GitHub 查询最新发布信息..."
+    local json
+    json=$($CURL_BIN -s "$GITHUB_API")
+    if [ -z "$json" ]; then
+        log_error "无法从 GitHub 获取 release 信息"
+        return 1
+    fi
+
+    # Extract tag_name
+    local tag
+    tag=$(echo "$json" | grep -Po '"tag_name":\s*"\K(.*?)(?=")' | head -n1)
+    if [ -z "$tag" ]; then
+        log_error "未能解析最新版本标签"
+        return 1
+    fi
+
+    # Find asset browser_download_url that matches komari-linux-<arch>
+    local file_pattern="komari-linux-${arch}"
+    local url
+    url=$(echo "$json" | grep -Po '"browser_download_url":\s*"\K(.*?komari-linux-'$arch'[^"]*)' | head -n1)
+    if [ -z "$url" ]; then
+        # fallback: try generic "komari-linux"
+        url=$(echo "$json" | grep -Po '"browser_download_url":\s*"\K(.*?komari-linux[^"]*)' | head -n1)
+    fi
+
+    if [ -z "$url" ]; then
+        log_error "未找到适用于架构 $arch 的发布资产"
+        return 1
+    fi
+
+    LATEST_DOWNLOAD_URL="$url"
+    echo "$tag"
+    return 0
+}
+
 # Install dependencies
 install_dependencies() {
     log_step "检查并安装依赖..."
@@ -110,10 +182,11 @@ install_dependencies() {
             log_error "未找到支持的包管理器 (apt/yum/apk)"
             exit 1
         fi
+        CURL_BIN=$(command -v curl || true)
     fi
 }
 
-# Binary installation
+# Binary installation (interactive and non-interactive)
 install_binary() {
     log_step "开始二进制安装..."
 
@@ -122,24 +195,28 @@ install_binary() {
         return
     fi
 
-
     # 监听端口输入，校验范围 1-65535
-    while true; do
-        read -p "请输入监听端口 [默认: $DEFAULT_PORT]: " input_port
-        if [[ -z "$input_port" ]]; then
-            LISTEN_PORT="$DEFAULT_PORT"
-            break
-        elif [[ "$input_port" =~ ^[0-9]+$ ]] && (( input_port >= 1 && input_port <= 65535 )); then
-            LISTEN_PORT="$input_port"
-            break
-        else
-            log_error "端口号无效，请输入 1-65535 之间的数字。"
-        fi
-    done
+    if [ "$AUTO_MODE" -eq 1 ]; then
+        LISTEN_PORT="$DEFAULT_PORT"
+    else
+        while true; do
+            read -p "请输入监听端口 [默认: $DEFAULT_PORT]: " input_port
+            if [[ -z "$input_port" ]]; then
+                LISTEN_PORT="$DEFAULT_PORT"
+                break
+            elif [[ "$input_port" =~ ^[0-9]+$ ]] && (( input_port >= 1 && input_port <= 65535 )); then
+                LISTEN_PORT="$input_port"
+                break
+            else
+                log_error "端口号无效，请输入 1-65535 之间的数字。"
+            fi
+        done
+    fi
 
     install_dependencies
 
-    local arch=$(detect_arch)
+    local arch
+    arch=$(detect_arch)
     log_info "检测到架构: $arch"
 
     log_step "创建安装目录: $INSTALL_DIR"
@@ -148,19 +225,30 @@ install_binary() {
     log_step "创建数据目录: $DATA_DIR"
     mkdir -p "$DATA_DIR"
 
-    local file_name="komari-linux-${arch}"
-    local download_url="https://github.com/komari-monitor/komari/releases/latest/download/${file_name}"
+    # Use GitHub API to find the correct download URL and tag
+    local latest_tag
+    if ! latest_tag=$(get_latest_release_info); then
+        log_error "获取最新发布信息失败，使用默认下载 URL 作为回退。"
+        local file_name="komari-linux-${arch}"
+        LATEST_DOWNLOAD_URL="https://github.com/komari-monitor/komari/releases/latest/download/${file_name}"
+        latest_tag=""
+    fi
 
     log_step "下载 Komari 二进制文件..."
-    log_info "URL: $download_url"
+    log_info "URL: $LATEST_DOWNLOAD_URL"
 
-    if ! curl -L -o "$BINARY_PATH" "$download_url"; then
+    if ! $CURL_BIN -L -o "$BINARY_PATH" "$LATEST_DOWNLOAD_URL"; then
         log_error "下载失败"
         return 1
     fi
 
     chmod +x "$BINARY_PATH"
     log_success "Komari 二进制文件安装完成: $BINARY_PATH"
+
+    # record installed version if we have the tag
+    if [ -n "$latest_tag" ]; then
+        set_local_version "$latest_tag"
+    fi
 
     if ! check_systemd; then
         log_step "警告：未检测到 systemd，跳过服务创建。"
@@ -173,23 +261,26 @@ install_binary() {
 
     create_systemd_service "$LISTEN_PORT"
 
-    systemctl daemon-reload
-    systemctl enable ${SERVICE_NAME}.service
-    systemctl start ${SERVICE_NAME}.service
+    $SYSTEMCTL_BIN daemon-reload
+    $SYSTEMCTL_BIN enable ${SERVICE_NAME}.service
+    $SYSTEMCTL_BIN start ${SERVICE_NAME}.service
 
-    if systemctl is-active --quiet ${SERVICE_NAME}.service; then
+    if $SYSTEMCTL_BIN is-active --quiet ${SERVICE_NAME}.service; then
         log_success "Komari 服务启动成功"
         
         log_step "正在获取初始密码..."
         sleep 5 
-        local password=$(journalctl -u ${SERVICE_NAME} --since "1 minute ago" | grep "admin account created." | tail -n 1 | sed -e 's/.*admin account created.//')
+        local password=""
+        if [ -n "$JOURNALCTL_BIN" ]; then
+            password=$($JOURNALCTL_BIN -u ${SERVICE_NAME} --since "1 minute ago" | grep "admin account created." | tail -n 1 | sed -e 's/.*admin account created.//')
+        fi
         if [ -z "$password" ]; then
             log_error "未能获取初始密码，请检查日志"
         fi
         show_access_info "$password" "$LISTEN_PORT"
     else
         log_error "Komari 服务启动失败"
-        log_info "查看日志: journalctl -u ${SERVICE_NAME} -f"
+        log_info "查看日志: $JOURNALCTL_BIN -u ${SERVICE_NAME} -f"
         return 1
     fi
 }
@@ -227,20 +318,20 @@ show_access_info() {
     log_success "安装完成！"
     echo
     log_info "访问信息："
-    log_info "  URL: http://$(hostname -I | awk '{print $1}'):${port}"
+    log_info "  URL: http://$($AWK_BIN '{print $1}' <<< \"$(hostname -I)\"):${port}"
     if [ -n "$password" ]; then
         log_info "初始登录信息（仅显示一次）: $password"
     fi
     echo
     log_info "服务管理命令："
-    log_info "  状态:  systemctl status $SERVICE_NAME"
-    log_info "  启动:   systemctl start $SERVICE_NAME"
-    log_info "  停止:    systemctl stop $SERVICE_NAME"
-    log_info "  重启: systemctl restart $SERVICE_NAME"
-    log_info "  日志:    journalctl -u $SERVICE_NAME -f"
+    log_info "  状态:  $SYSTEMCTL_BIN status $SERVICE_NAME"
+    log_info "  启动:   $SYSTEMCTL_BIN start $SERVICE_NAME"
+    log_info "  停止:    $SYSTEMCTL_BIN stop $SERVICE_NAME"
+    log_info "  重启: $SYSTEMCTL_BIN restart $SERVICE_NAME"
+    log_info "  日志:    $JOURNALCTL_BIN -u $SERVICE_NAME -f"
 }
 
-# Upgrade function
+# Upgrade function (interactive and non-interactive)
 upgrade_komari() {
     log_step "升级 Komari..."
 
@@ -255,33 +346,78 @@ upgrade_komari() {
     fi
 
     log_step "停止 Komari 服务..."
-    systemctl stop ${SERVICE_NAME}.service
+    $SYSTEMCTL_BIN stop ${SERVICE_NAME}.service
 
     log_step "备份当前二进制文件..."
     cp "$BINARY_PATH" "${BINARY_PATH}.backup.$(date +%Y%m%d_%H%M%S)"
 
-    local arch=$(detect_arch)
+    local arch
+    arch=$(detect_arch)
     local file_name="komari-linux-${arch}"
-    local download_url="https://github.com/komari-monitor/komari/releases/latest/download/${file_name}"
+
+    # Get latest info
+    local latest_tag
+    if ! latest_tag=$(get_latest_release_info); then
+        log_error "无法获取最新发布信息，取消升级"
+        # restore from backup
+        mv "${BINARY_PATH}.backup."* "$BINARY_PATH" 2>/dev/null || true
+        $SYSTEMCTL_BIN start ${SERVICE_NAME}.service
+        return 1
+    fi
 
     log_step "下载最新版本..."
-    if ! curl -L -o "$BINARY_PATH" "$download_url"; then
+    if ! $CURL_BIN -L -o "$BINARY_PATH" "$LATEST_DOWNLOAD_URL"; then
         log_error "下载失败，正在从备份恢复"
         mv "${BINARY_PATH}.backup."* "$BINARY_PATH"
-        systemctl start ${SERVICE_NAME}.service
+        $SYSTEMCTL_BIN start ${SERVICE_NAME}.service
         return 1
     fi
 
     chmod +x "$BINARY_PATH"
+    set_local_version "$latest_tag"
 
     log_step "重启 Komari 服务..."
-    systemctl start ${SERVICE_NAME}.service
+    $SYSTEMCTL_BIN start ${SERVICE_NAME}.service
 
-    if systemctl is-active --quiet ${SERVICE_NAME}.service; then
+    if $SYSTEMCTL_BIN is-active --quiet ${SERVICE_NAME}.service; then
         log_success "Komari 升级成功"
     else
         log_error "服务在升级后未能启动"
     fi
+}
+
+# Non-interactive: check remote release and install/upgrade if needed.
+auto_upgrade_check() {
+    log_step "自动检查 Komari 更新（非交互模式）..."
+
+    install_dependencies
+
+    local latest_tag
+    if ! latest_tag=$(get_latest_release_info); then
+        log_error "无法获取最新发布信息，退出。"
+        return 1
+    fi
+
+    local local_tag
+    local_tag=$(get_local_version)
+
+    if ! is_installed; then
+        log_info "Komari 未安装，开始安装最新版本: $latest_tag"
+        AUTO_MODE=1
+        # Use DEFAULT_PORT silently
+        LISTEN_PORT="$DEFAULT_PORT"
+        install_binary
+        return $?
+    fi
+
+    if [ "$local_tag" = "$latest_tag" ] && [ -n "$local_tag" ]; then
+        log_info "已是最新版本：$local_tag"
+        return 0
+    fi
+
+    log_info "检测到新版本：$latest_tag (本地: ${local_tag:-未安装})，开始升级..."
+    # upgrade_komari will fetch latest and restart service
+    upgrade_komari
 }
 
 # Uninstall function
@@ -293,7 +429,13 @@ uninstall_komari() {
         return 0
     fi
 
-    read -p "这将删除 Komari。您确定吗？(Y/n): " confirm
+    if [ "$AUTO_MODE" -eq 1 ]; then
+        log_info "非交互模式：自动确认卸载"
+        confirm="Y"
+    else
+        read -p "这将删除 Komari。您确定吗？(Y/n): " confirm
+    fi
+
     if [[ $confirm =~ ^[Nn]$ ]]; then
         log_info "卸载已取消"
         return 0
@@ -301,10 +443,10 @@ uninstall_komari() {
 
     if check_systemd; then
         log_step "停止并禁用服务..."
-        systemctl stop ${SERVICE_NAME}.service >/dev/null 2>&1
-        systemctl disable ${SERVICE_NAME}.service >/dev/null 2>&1
+        $SYSTEMCTL_BIN stop ${SERVICE_NAME}.service >/dev/null 2>&1
+        $SYSTEMCTL_BIN disable ${SERVICE_NAME}.service >/dev/null 2>&1
         rm -f "/etc/systemd/system/${SERVICE_NAME}.service"
-        systemctl daemon-reload
+        $SYSTEMCTL_BIN daemon-reload
         log_success "systemd 服务已删除"
     fi
 
@@ -329,7 +471,7 @@ show_status() {
         return
     fi
     log_step "Komari 服务状态:"
-    systemctl status ${SERVICE_NAME}.service --no-pager -l
+    $SYSTEMCTL_BIN status ${SERVICE_NAME}.service --no-pager -l
 }
 
 # Show service logs
@@ -343,7 +485,7 @@ show_logs() {
         return
     fi
     log_step "查看 Komari 服务日志..."
-    journalctl -u ${SERVICE_NAME} -f --no-pager
+    $JOURNALCTL_BIN -u ${SERVICE_NAME} -f --no-pager
 }
 
 # Restart service
@@ -357,8 +499,8 @@ restart_service() {
         return
     fi
     log_step "重启 Komari 服务..."
-    systemctl restart ${SERVICE_NAME}.service
-    if systemctl is-active --quiet ${SERVICE_NAME}.service; then
+    $SYSTEMCTL_BIN restart ${SERVICE_NAME}.service
+    if $SYSTEMCTL_BIN is-active --quiet ${SERVICE_NAME}.service; then
         log_success "服务重启成功"
     else
         log_error "服务重启失败"
@@ -376,7 +518,7 @@ stop_service() {
         return
     fi
     log_step "停止 Komari 服务..."
-    systemctl stop ${SERVICE_NAME}.service
+    $SYSTEMCTL_BIN stop ${SERVICE_NAME}.service
     log_success "服务已停止"
 }
 
@@ -410,6 +552,21 @@ main_menu() {
     esac
 }
 
-# Main execution
+# CLI argument parsing for non-interactive mode
+if [ "$1" = "--auto-upgrade" ] || [ "$1" = "--cron" ]; then
+    AUTO_MODE=1
+    check_root
+    auto_upgrade_check
+    exit $?
+fi
+
+if [ "$1" = "--install-noninteractive" ]; then
+    AUTO_MODE=1
+    check_root
+    install_binary
+    exit $?
+fi
+
+# Default interactive behavior
 check_root
 main_menu
