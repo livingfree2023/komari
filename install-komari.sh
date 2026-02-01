@@ -6,21 +6,21 @@ GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 NC='\033[0m' # No Color
 
-# Logging functions
+# Logging functions (write to stderr so command-substitution is not polluted)
 log_info() {
-    echo -e "$1"
+    >&2 echo -e "$1"
 }
 
 log_success() {
-    echo -e "${GREEN}$1${NC}"
+    >&2 echo -e "${GREEN}$1${NC}"
 }
 
 log_error() {
-    echo -e "${RED}$1${NC}"
+    >&2 echo -e "${RED}$1${NC}"
 }
 
 log_step() {
-    echo -e "${YELLOW}$1${NC}"
+    >&2 echo -e "${YELLOW}$1${NC}"
 }
 
 
@@ -35,11 +35,12 @@ AUTO_MODE=0
 GITHUB_API="https://api.github.com/repos/komari-monitor/komari/releases/latest"
 VERSION_FILE="$INSTALL_DIR/VERSION"
 
-# Resolve command paths (use full paths for cron)
+# Resolve command paths (use full paths for cron). Re-resolve later if install_dependencies installs curl.
 CURL_BIN=$(command -v curl || true)
 SYSTEMCTL_BIN=$(command -v systemctl || true)
 JOURNALCTL_BIN=$(command -v journalctl || true)
 AWK_BIN=$(command -v awk || true)
+SED_BIN=$(command -v sed || true)
 
 # Show banner
 show_banner() {
@@ -94,63 +95,113 @@ detect_arch() {
 # Check if Komari is already installed
 is_installed() {
     if [ -f "$BINARY_PATH" ]; then
-        return 0 # 0 means true in bash exit codes
+        return 0
     else
-        return 1 # 1 means false
+        return 1
     fi
 }
 
-# Read local installed version (tag) from VERSION file
+# Read local installed version by invoking the installed binary (preferred)
 get_local_version() {
+    # Prefer asking the installed binary for its version if it is executable
+    if [ -x "$BINARY_PATH" ]; then
+        # run the binary and capture the first info-ish line (some builds print to stderr)
+        local ver_line
+        ver_line=$("$BINARY_PATH" -h 2>&1 | head -n 1) || true
+
+        # Example input:
+        # 2026/02/01 14:18:54 [INFO] Komari Monitor 1.1.4 (hash: ...)
+        # Extract semantic version like 1.1.4
+        local ver
+        ver=$(echo "$ver_line" | grep -oE 'Komari Monitor [0-9]+(\.[0-9]+)*' | awk '{print $3}' || true)
+
+        if [ -n "$ver" ]; then
+            echo "$ver"
+            return 0
+        fi
+    fi
+
+    # Fallback to VERSION file if binary not present or parsing failed
     if [ -f "$VERSION_FILE" ]; then
         cat "$VERSION_FILE"
-    else
-        echo ""
+        return 0
     fi
+
+    # Nothing found
+    echo ""
+    return 0
 }
 
-# Save local version (tag)
+# Save local version (tag) normalized (strip leading v)
 set_local_version() {
     local tag="$1"
+    # normalize tag (remove leading v)
+    tag=${tag#v}
     mkdir -p "$INSTALL_DIR"
     echo "$tag" > "$VERSION_FILE"
 }
 
 # Query GitHub Releases API for latest tag and asset URL for our arch
-# Output:
-#   LATEST_TAG (stdout) and sets global LATEST_DOWNLOAD_URL
+# Outputs: tag on stdout (normalized without leading 'v'), sets global LATEST_DOWNLOAD_URL
 LATEST_DOWNLOAD_URL=""
 get_latest_release_info() {
     local arch
     arch=$(detect_arch)
+
+    # ensure curl path (may have been installed earlier)
+    CURL_BIN=$(command -v curl || true)
     if [ -z "$CURL_BIN" ]; then
         log_error "curl 未安装，无法检查更新"
         return 1
     fi
 
+    # Support optional GitHub token to avoid rate limits
+    local curl_auth_args=()
+    if [ -n "$GITHUB_TOKEN" ]; then
+        curl_auth_args+=(-H "Authorization: token $GITHUB_TOKEN")
+    fi
+
     log_step "从 GitHub 查询最新发布信息..."
+    # get JSON
     local json
-    json=$($CURL_BIN -s "$GITHUB_API")
+    json=$($CURL_BIN -s "${curl_auth_args[@]}" "$GITHUB_API")
     if [ -z "$json" ]; then
         log_error "无法从 GitHub 获取 release 信息"
         return 1
     fi
 
-    # Extract tag_name
+    # Extract tag_name (portable)
     local tag
-    tag=$(echo "$json" | grep -Po '"tag_name":\s*"\K(.*?)(?=")' | head -n1)
+    tag=$(echo "$json" | awk -F'"' '/"tag_name":/ {print $4; exit}')
     if [ -z "$tag" ]; then
         log_error "未能解析最新版本标签"
         return 1
     fi
+    # normalize tag (strip leading v if present)
+    tag=${tag#v}
 
-    # Find asset browser_download_url that matches komari-linux-<arch>
-    local file_pattern="komari-linux-${arch}"
+    # Find asset browser_download_url that matches komari-linux-<arch> (prefer exact arch)
     local url
-    url=$(echo "$json" | grep -Po '"browser_download_url":\s*"\K(.*?komari-linux-'$arch'[^"]*)' | head -n1)
+    url=$(echo "$json" | awk -F'"' -v arch="$arch" '
+        /"browser_download_url":/ {
+            u = $4
+            if (u ~ "komari-linux-"arch) { print u; exit }
+            if (u ~ "komari-linux" && fallback == "") fallback = u
+        }
+        END { if (url == "" && fallback != "") print fallback }
+    ' )
+
+    # If awk didn't print (older awk may not set fallback in this manner), do a simpler scan
     if [ -z "$url" ]; then
-        # fallback: try generic "komari-linux"
-        url=$(echo "$json" | grep -Po '"browser_download_url":\s*"\K(.*?komari-linux[^"]*)' | head -n1)
+        # simpler grep/awk fallback
+        url=$(echo "$json" | grep -Eo '"browser_download_url":[[:space:]]*"[^"]+' | awk -F'"' -v arch="$arch" '
+            {
+                u = $4
+                if (u ~ "komari-linux-"arch) { print u; exit }
+                if (u ~ "komari-linux" && fallback == "") fallback = u
+            }
+            END { if (fallback != "") print fallback }
+        ')
     fi
 
     if [ -z "$url" ]; then
@@ -234,6 +285,12 @@ install_binary() {
         latest_tag=""
     fi
 
+    # ensure URL is non-empty
+    if [ -z "$LATEST_DOWNLOAD_URL" ]; then
+        log_error "下载 URL 为空，取消安装"
+        return 1
+    fi
+
     log_step "下载 Komari 二进制文件..."
     log_info "URL: $LATEST_DOWNLOAD_URL"
 
@@ -272,7 +329,7 @@ install_binary() {
         sleep 5 
         local password=""
         if [ -n "$JOURNALCTL_BIN" ]; then
-            password=$($JOURNALCTL_BIN -u ${SERVICE_NAME} --since "1 minute ago" | grep "admin account created." | tail -n 1 | sed -e 's/.*admin account created.//')
+            password=$($JOURNALCTL_BIN -u ${SERVICE_NAME} --since "1 minute ago" 2>/dev/null | grep "admin account created." | tail -n 1 | sed -e 's/.*admin account created.//')
         fi
         if [ -z "$password" ]; then
             log_error "未能获取初始密码，请检查日志"
@@ -318,7 +375,15 @@ show_access_info() {
     log_success "安装完成！"
     echo
     log_info "访问信息："
-    log_info "  URL: http://$($AWK_BIN '{print $1}' <<< \"$(hostname -I)\"):${port}"
+    # hostname -I may be empty on minimal systems; guard it
+    local ipaddr
+    if command -v hostname >/dev/null 2>&1 && hostname -I >/dev/null 2>&1; then
+        ipaddr=$(hostname -I 2>/dev/null | awk '{print $1}')
+    fi
+    if [ -z "$ipaddr" ]; then
+        ipaddr="127.0.0.1"
+    fi
+    log_info "  URL: http://${ipaddr}:${port}"
     if [ -n "$password" ]; then
         log_info "初始登录信息（仅显示一次）: $password"
     fi
@@ -349,18 +414,32 @@ upgrade_komari() {
     $SYSTEMCTL_BIN stop ${SERVICE_NAME}.service
 
     log_step "备份当前二进制文件..."
-    cp "$BINARY_PATH" "${BINARY_PATH}.backup.$(date +%Y%m%d_%H%M%S)"
-
-    local arch
-    arch=$(detect_arch)
-    local file_name="komari-linux-${arch}"
+    cp "$BINARY_PATH" "${BINARY_PATH}.backup.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
 
     # Get latest info
     local latest_tag
     if ! latest_tag=$(get_latest_release_info); then
         log_error "无法获取最新发布信息，取消升级"
-        # restore from backup
-        mv "${BINARY_PATH}.backup."* "$BINARY_PATH" 2>/dev/null || true
+        # restore from the most recent backup (if present)
+        latest_backup=$(ls -1t "${BINARY_PATH}.backup."* 2>/dev/null | head -n1)
+        if [ -n "$latest_backup" ]; then
+            mv "$latest_backup" "$BINARY_PATH" 2>/dev/null || log_error "从备份恢复失败: $latest_backup"
+            log_info "已从备份恢复: $latest_backup"
+        else
+            log_error "未找到备份文件，无法恢复二进制"
+        fi
+        $SYSTEMCTL_BIN start ${SERVICE_NAME}.service
+        return 1
+    fi
+
+    # ensure URL is non-empty
+    if [ -z "$LATEST_DOWNLOAD_URL" ]; then
+        log_error "下载 URL 为空，取消升级"
+        # try to restore backup
+        latest_backup=$(ls -1t "${BINARY_PATH}.backup."* 2>/dev/null | head -n1)
+        if [ -n "$latest_backup" ]; then
+            mv "$latest_backup" "$BINARY_PATH" 2>/dev/null || true
+        fi
         $SYSTEMCTL_BIN start ${SERVICE_NAME}.service
         return 1
     fi
@@ -368,7 +447,13 @@ upgrade_komari() {
     log_step "下载最新版本..."
     if ! $CURL_BIN -L -o "$BINARY_PATH" "$LATEST_DOWNLOAD_URL"; then
         log_error "下载失败，正在从备份恢复"
-        mv "${BINARY_PATH}.backup."* "$BINARY_PATH"
+        latest_backup=$(ls -1t "${BINARY_PATH}.backup."* 2>/dev/null | head -n1)
+        if [ -n "$latest_backup" ]; then
+            mv "$latest_backup" "$BINARY_PATH" 2>/dev/null || log_error "从备份恢复失败: $latest_backup"
+            log_info "已从备份恢复: $latest_backup"
+        else
+            log_error "未找到备份文件，无法恢复二进制"
+        fi
         $SYSTEMCTL_BIN start ${SERVICE_NAME}.service
         return 1
     fi
@@ -397,26 +482,28 @@ auto_upgrade_check() {
         log_error "无法获取最新发布信息，退出。"
         return 1
     fi
+    # normalize tag
+    latest_tag=${latest_tag#v}
 
     local local_tag
     local_tag=$(get_local_version)
+    # normalize local_tag (just in case)
+    local_tag=${local_tag#v}
 
     if ! is_installed; then
         log_info "Komari 未安装，开始安装最新版本: $latest_tag"
         AUTO_MODE=1
-        # Use DEFAULT_PORT silently
         LISTEN_PORT="$DEFAULT_PORT"
         install_binary
         return $?
     fi
 
-    if [ "$local_tag" = "$latest_tag" ] && [ -n "$local_tag" ]; then
+    if [ -n "$local_tag" ] && [ "$local_tag" = "$latest_tag" ]; then
         log_info "已是最新版本：$local_tag"
         return 0
     fi
 
     log_info "检测到新版本：$latest_tag (本地: ${local_tag:-未安装})，开始升级..."
-    # upgrade_komari will fetch latest and restart service
     upgrade_komari
 }
 
