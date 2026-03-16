@@ -8,16 +8,60 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/komari-monitor/komari/database/config"
+	"github.com/komari-monitor/komari/config"
 	"github.com/komari-monitor/komari/database/dbcore"
 	"github.com/komari-monitor/komari/database/models"
 )
 
-func GetPublicInfo() (any, error) {
-	cst, err := config.Get()
+func GetPublicInfo() (map[string]interface{}, error) {
+	cstPtr, err := config.GetManyAs[config.Legacy]()
 	if err != nil {
 		return nil, err
 	}
+	cst := *cstPtr
+
+	all, allErr := config.GetAll()
+	hasKey := func(k string) bool {
+		if allErr != nil {
+			return false
+		}
+		_, ok := all[k]
+		return ok
+	}
+
+	// Apply defaults only when a key is missing.
+	if !hasKey("sitename") {
+		cst.Sitename = "Komari"
+	}
+	if !hasKey("description") {
+		cst.Description = "Komari Monitor, a simple server monitoring tool."
+	}
+	if !hasKey("theme") {
+		cst.Theme = "default"
+	}
+	if !hasKey("o_auth_provider") {
+		cst.OAuthProvider = "github"
+	}
+	if !hasKey("record_enabled") {
+		cst.RecordEnabled = true
+	}
+	if !hasKey("record_preserve_time") {
+		cst.RecordPreserveTime = 720
+	}
+	if !hasKey("ping_record_preserve_time") {
+		cst.PingRecordPreserveTime = 24
+	}
+
+	// Fallback defaults if we couldn't enumerate keys.
+	if allErr != nil {
+		if cst.Sitename == "" {
+			cst.Sitename = "Komari"
+		}
+		if cst.Description == "" {
+			cst.Description = "Komari Monitor, a simple server monitoring tool."
+		}
+	}
+
 	db := dbcore.GetDBInstance()
 	tc := models.ThemeConfiguration{}
 	err = db.Model(&models.ThemeConfiguration{}).Where("short = ?", cst.Theme).First(&tc).Error

@@ -2,12 +2,13 @@ package notifier
 
 import (
 	"fmt"
+	"log/slog"
 	"math"
 	"strings"
 	"time"
 
+	"github.com/komari-monitor/komari/config"
 	"github.com/komari-monitor/komari/database/clients"
-	"github.com/komari-monitor/komari/database/config"
 	"github.com/komari-monitor/komari/database/models"
 	"github.com/komari-monitor/komari/utils/messageSender"
 	"github.com/komari-monitor/komari/ws"
@@ -26,18 +27,17 @@ func CheckTraffic() {
 	if len(reports) == 0 {
 		return
 	}
-
-	cfg, err := config.Get()
+	cfg, err := config.GetAs[float64](config.TrafficLimitPercentageKey, 80.0)
 	if err != nil {
-		return
+		slog.Error("failed to get traffic limit percentage", "error", err)
 	}
 
-	if cfg.TrafficLimitPercentage <= 0 {
+	if cfg <= 0 {
 		return
 	}
 
 	// 起始阈值：例如 80%，非5的倍数则从上取整到最近的5的倍数，例如 83->85
-	startThreshold := cfg.TrafficLimitPercentage
+	startThreshold := cfg
 	if startThreshold < 0 {
 		startThreshold = 0
 	}
@@ -85,9 +85,14 @@ func CheckTraffic() {
 		last, _ := trafficCache.Get(key)
 		lastStep, _ := last.(int)
 
+		// 修复：当检测到当前进度小于历史记录时，说明流量已重置，将基准归零
+		if curStep < lastStep {
+			lastStep = 0
+		}
+
 		if curStep > lastStep { // 只在进入新步进时提醒一次
 			trafficCache.SetDefault(key, curStep)
-
+		
 			msg := fmt.Sprintf("used %d%% (%s / %s), type=%s", curStep, humanBytes(used), humanBytes(c.TrafficLimit), strings.ToLower(c.TrafficLimitType))
 			// 发送通知（内部会检查 NotificationEnabled）
 			_ = messageSender.SendEvent(models.EventMessage{

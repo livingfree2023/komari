@@ -22,13 +22,13 @@ import (
 	"github.com/komari-monitor/komari/api/client"
 	"github.com/komari-monitor/komari/api/jsonRpc"
 	public_api "github.com/komari-monitor/komari/api/public"
-	"github.com/komari-monitor/komari/api/record"
-	"github.com/komari-monitor/komari/api/task"
+	"github.com/komari-monitor/komari/api/terminal"
 	"github.com/komari-monitor/komari/cmd/flags"
+
+	"github.com/komari-monitor/komari/config"
 	"github.com/komari-monitor/komari/database"
 	"github.com/komari-monitor/komari/database/accounts"
 	"github.com/komari-monitor/komari/database/auditlog"
-	"github.com/komari-monitor/komari/database/config"
 	"github.com/komari-monitor/komari/database/dbcore"
 	"github.com/komari-monitor/komari/database/models"
 	d_notification "github.com/komari-monitor/komari/database/notification"
@@ -67,10 +67,6 @@ func init() {
 
 func RunServer() {
 	// #region 初始化
-	if err := os.MkdirAll("./data", os.ModePerm); err != nil {
-		log.Fatalf("Failed to create data directory: %v", err)
-	}
-	// 创建主题目录
 	if err := os.MkdirAll("./data/theme", os.ModePerm); err != nil {
 		log.Fatalf("Failed to create theme directory: %v", err)
 	}
@@ -78,7 +74,7 @@ func RunServer() {
 	if utils.VersionHash != "unknown" {
 		gin.SetMode(gin.ReleaseMode)
 	}
-	conf, err := config.Get()
+	conf, err := config.GetManyAs[config.Legacy]()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -98,8 +94,11 @@ func RunServer() {
 	}
 
 	config.Subscribe(func(event config.ConfigEvent) {
-		if event.New.OAuthProvider != event.Old.OAuthProvider {
-			oidcProvider, err := database.GetOidcConfigByName(event.New.OAuthProvider)
+		if ok, t := config.IsChangedT[string](event, config.OAuthProviderKey); ok {
+			if t == "" || t == "none" {
+				t = "github"
+			}
+			oidcProvider, err := database.GetOidcConfigByName(t)
 			if err != nil {
 				log.Printf("Failed to get OIDC provider config: %v", err)
 			} else {
@@ -110,12 +109,11 @@ func RunServer() {
 				auditlog.EventLog("error", fmt.Sprintf("Failed to load OIDC provider: %v", err))
 			}
 		}
-		if event.New.NotificationMethod != event.Old.NotificationMethod {
-			messageSender.Initialize()
-		}
-		if event.New.NezhaCompatEnabled != event.Old.NezhaCompatEnabled {
-			if event.New.NezhaCompatEnabled {
-				if err := StartNezhaCompat(event.New.NezhaCompatListen); err != nil {
+
+		if ok, t := config.IsChangedT[bool](event, config.NezhaCompatEnabledKey); ok {
+			if t {
+				l, _ := config.GetAs[string](config.NezhaCompatListenKey)
+				if err := StartNezhaCompat(l); err != nil {
 					log.Printf("start Nezha compat server error: %v", err)
 					auditlog.EventLog("error", fmt.Sprintf("start Nezha compat server error: %v", err))
 				}
@@ -144,13 +142,17 @@ func RunServer() {
 
 	DynamicCorsEnabled = conf.AllowCors
 	config.Subscribe(func(event config.ConfigEvent) {
-		DynamicCorsEnabled = event.New.AllowCors
-		if event.New.GeoIpProvider != event.Old.GeoIpProvider {
+		if ok, t := config.IsChangedT[bool](event, config.AllowCorsKey); ok {
+			DynamicCorsEnabled = t
+		}
+		if event.IsChanged(config.GeoIpProviderKey) {
 			go geoip.InitGeoIp()
 		}
-		if event.New.NotificationMethod != event.Old.NotificationMethod {
+
+		if event.IsChanged(config.NotificationMethodKey) {
 			go messageSender.Initialize()
 		}
+
 	})
 	r.Use(func(c *gin.Context) {
 		if DynamicCorsEnabled {
@@ -168,6 +170,7 @@ func RunServer() {
 		c.Next()
 	})
 
+	r.Use(api.IdentityMiddleware())
 	r.Use(api.PrivateSiteMiddleware())
 
 	r.Use(func(c *gin.Context) {
@@ -181,35 +184,37 @@ func RunServer() {
 		c.String(200, "pong")
 	})
 	// #region 公开路由
-	r.POST("/api/login", api.Login)
-	r.GET("/api/me", api.GetMe)
+	r.POST("/api/login", public_api.Login)
+	r.GET("/api/me", public_api.GetMe)
 	r.GET("/api/clients", api.GetClients)
-	r.GET("/api/nodes", api.GetNodesInformation)
-	r.GET("/api/public", api.GetPublicSettings)
-	r.GET("/api/oauth", api.OAuth)
-	r.GET("/api/oauth_callback", api.OAuthCallback)
-	r.GET("/api/logout", api.Logout)
-	r.GET("/api/version", api.GetVersion)
-	r.GET("/api/recent/:uuid", api.GetClientRecentRecords)
+	r.GET("/api/nodes", public_api.GetNodesInformation)
+	r.GET("/api/public", public_api.GetPublicSettings)
+	r.GET("/api/oauth", public_api.OAuth)
+	r.GET("/api/oauth_callback", public_api.OAuthCallback)
+	r.GET("/api/logout", public_api.Logout)
+	r.GET("/api/version", public_api.GetVersion)
+	r.GET("/api/recent/:uuid", public_api.GetClientRecentRecords)
 
-	r.GET("/api/records/load", record.GetRecordsByUUID)
-	r.GET("/api/records/ping", record.GetPingRecords)
-	r.GET("/api/task/ping", task.GetPublicPingTasks)
+	r.GET("/api/records/load", public_api.GetRecordsByUUID)
+	r.GET("/api/records/ping", public_api.GetPingRecords)
+	r.GET("/api/task/ping", public_api.GetPublicPingTasks)
 	r.GET("/api/rpc2", jsonRpc.OnRpcRequest)
 	r.POST("/api/rpc2", jsonRpc.OnRpcRequest)
 	r.GET("/api/mjpeg_live", public_api.MjpegLiveHandler)
 	// #region Agent
 	r.POST("/api/clients/register", client.RegisterClient)
-	tokenAuthrized := r.Group("/api/clients", api.TokenAuthMiddleware())
+	tokenAuthrized := r.Group("/api/clients", api.RequireRole(api.RoleAdmin, api.RoleClient))
 	{
 		tokenAuthrized.GET("/report", client.WebSocketReport) // websocket
 		tokenAuthrized.POST("/uploadBasicInfo", client.UploadBasicInfo)
 		tokenAuthrized.POST("/report", client.UploadReport)
-		tokenAuthrized.GET("/terminal", client.EstablishConnection)
+		tokenAuthrized.GET("/terminal", terminal.EstablishConnection)
 		tokenAuthrized.POST("/task/result", client.TaskResult)
+		tokenAuthrized.GET("/ping/tasks", client.GetPingTasks)
+		tokenAuthrized.POST("/ping/result", client.UploadPingResult)
 	}
 	// #region 管理员
-	adminAuthrized := r.Group("/api/admin", api.AdminAuthMiddleware())
+	adminAuthrized := r.Group("/api/admin", api.RequireRole(api.RoleAdmin))
 	{
 		adminAuthrized.GET("/download/backup", admin.DownloadBackup)
 		adminAuthrized.POST("/upload/backup", admin.UploadBackup)
@@ -255,6 +260,7 @@ func RunServer() {
 			themeGroup.POST("/delete", admin.DeleteTheme)
 			themeGroup.GET("/set", admin.SetTheme)
 			themeGroup.POST("/update", admin.UpdateTheme)
+			themeGroup.POST("/import", admin.ImportTheme)
 			themeGroup.POST("/settings", admin.UpdateThemeSettings)
 		}
 		// clients
@@ -268,7 +274,7 @@ func RunServer() {
 			clientGroup.GET("/:uuid/token", admin.GetClientToken)
 			clientGroup.POST("/order", admin.OrderWeight)
 			// client terminal
-			clientGroup.GET("/:uuid/terminal", api.RequestTerminal)
+			clientGroup.GET("/:uuid/terminal", terminal.RequestTerminal)
 		}
 
 		// records
@@ -338,11 +344,6 @@ func RunServer() {
 	public.Static(r.Group("/"), func(handlers ...gin.HandlerFunc) {
 		r.NoRoute(handlers...)
 	})
-	// #region 静态文件服务
-	public.UpdateIndex(conf)
-	config.Subscribe(func(event config.ConfigEvent) {
-		public.UpdateIndex(event.New)
-	})
 
 	srv := &http.Server{
 		Addr:    flags.Listen,
@@ -400,7 +401,7 @@ func DoScheduledWork() {
 	records.CompactRecord()
 	go notifier.CheckExpireScheduledWork()
 	for {
-		cfg, _ := config.Get()
+		cfg, _ := config.GetManyAs[config.Legacy]()
 		select {
 		case <-ticker.C:
 			records.DeleteRecordBefore(time.Now().Add(-time.Hour * time.Duration(cfg.RecordPreserveTime)))

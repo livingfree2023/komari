@@ -1,5 +1,5 @@
+# Komari
 
-# Komari 
 ![Badge](https://hitscounter.dev/api/hit?url=https%3A%2F%2Fgithub.com%2Fkomari-monitor%2Fkomari&label=&icon=github&color=%23a370f7&message=&style=flat&tz=UTC)
 
 ![komari](https://socialify.git.ci/komari-monitor/komari/image?description=1&font=Inter&forks=1&issues=1&language=1&logo=https%3A%2F%2Fraw.githubusercontent.com%2Fkomari-monitor%2Fkomari-web%2Fd54ce1288df41ead08aa19f8700186e68028a889%2Fpublic%2Ffavicon.png&name=1&owner=1&pattern=Plus&pulls=1&stargazers=1&theme=Auto)
@@ -9,6 +9,7 @@ Komari 是一款輕量級的自託管伺服器監控工具，旨在提供簡單�
 [文檔](https://komari-document.pages.dev/) | [Telegram 群組](https://t.me/komari_monitor)
 
 ## 特性
+
 - **輕量高效**：低資源佔用，適合各種規模的伺服器。
 - **自託管**：完全掌控數據隱私，部署簡單。
 - **Web 介面**：直觀的監控儀表盤，易於使用。
@@ -17,12 +18,18 @@ Komari 是一款輕量級的自託管伺服器監控工具，旨在提供簡單�
 
 ### 0. 容器雲一鍵部署
 
-- 雨雲雲應用 - CNY 4.5/月 
+- 雨雲雲應用 - CNY 4.5/月
 
-[![](https://rainyun-apps.cn-nb1.rains3.com/materials/deploy-on-rainyun-cn.svg)](https://app.rainyun.com/apps/rca/store/6780/NzYxNzAz_) 
+[![](https://rainyun-apps.cn-nb1.rains3.com/materials/deploy-on-rainyun-cn.svg)](https://app.rainyun.com/apps/rca/store/6780/NzYxNzAz_)
+
+- 1Panel 應用商店
+
+已上架 1Panel 應用商店，應用商店-實用工具-Komari 即可安裝
 
 ### 1. 使用一鍵安裝腳本
+
 適用於使用了 systemd 的發行版（Ubuntu、Debian...）。
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/komari-monitor/komari/main/install-komari.sh -o install-komari.sh
 chmod +x install-komari.sh
@@ -30,6 +37,7 @@ sudo ./install-komari.sh
 ```
 
 ### 2. Docker 部署
+
 1. 建立資料目錄：
    ```bash
    mkdir -p ./data
@@ -52,6 +60,7 @@ sudo ./install-komari.sh
 > 你也可以透過環境變數 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD` 自訂初始使用者名稱和密碼。
 
 ### 3. 二進位檔案部署
+
 1. 存取 Komari 的 [GitHub Release 頁面](https://github.com/komari-monitor/komari/releases) 下載適用於你作業系統的最新二進位檔案。
 2. 執行 Komari：
    ```bash
@@ -62,7 +71,6 @@ sudo ./install-komari.sh
 
 > [!NOTE]
 > 確保二進位檔案具有可執行權限（`chmod +x komari`）。資料將保存在執行目錄下的 `data` 資料夾中。
-
 
 ### 手工建置
 
@@ -82,28 +90,35 @@ sudo ./install-komari.sh
    git clone https://github.com/komari-monitor/komari
    cd komari
    ```
-   將步驟1中產生的靜態檔案複製到 `komari` 專案根目錄下的 `/public/dist` 資料夾。
-   ```bash 
+   將步驟1中產生的靜態檔案複製到 `komari` 專案根目錄下的 `/public/defaultTheme/dist` 資料夾，並將 `komari-theme.json` 與 `preview.png`/`perview.png` 複製到 `/public/defaultTheme`。
+   ```bash
    go build -o komari
    ```
-4. 執行：
+3. 執行：
    ```bash
    ./komari server -l 0.0.0.0:25774
    ```
    預設監聽 `25774` 連接埠，存取 `http://localhost:25774`。
 
 ## 前端開發指南
+
 [Komari 主題開發指南 | Komari](https://komari-document.pages.dev/dev/theme.html)
 
 [在 Crowdin 上翻譯 Komari](https://crowdin.com/project/komari/invite?h=cd051bf172c9a9f7f1360e87ffb521692507706)
 
 ## 客戶端 Agent 開發指南
+
 [Komari Agent 資訊上報與事件處理文檔](https://komari-document.pages.dev/dev/agent.html)
 
 ## 貢獻
+
 歡迎提交 Issue 或 Pull Request！
 
 ## 鳴謝
+
+### 破碎工坊雲
+
+[破碎工坊雲 - 專業雲計算服務平台，提供高效、穩定、安全的高防伺服器與CDN解決方案](https://www.crash.work/)
 
 ### DreamCloud
 
@@ -111,7 +126,7 @@ sudo ./install-komari.sh
 
 ### 🚀 由 SharonNetworks 贊助
 
-[![Sharon Networks](https://raw.githubusercontent.com/komari-monitor/public/refs/heads/main/images/sharon-networks.webp)](https://sharon.io) 
+[![Sharon Networks](https://raw.githubusercontent.com/komari-monitor/public/refs/heads/main/images/sharon-networks.webp)](https://sharon.io)
 
 SharonNetworks 為您的業務起飛保駕護航！
 
@@ -126,4 +141,3 @@ SharonNetworks 為您的業務起飛保駕護航！
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=komari-monitor/komari&type=Date)](https://www.star-history.com/#komari-monitor/komari&Date)
-

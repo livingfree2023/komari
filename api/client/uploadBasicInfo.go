@@ -3,8 +3,8 @@ package client
 import (
 	"net"
 
+	"github.com/komari-monitor/komari/config"
 	"github.com/komari-monitor/komari/database/clients"
-	"github.com/komari-monitor/komari/database/config"
 	"github.com/komari-monitor/komari/utils/geoip"
 
 	"github.com/gin-gonic/gin"
@@ -37,7 +37,7 @@ func UploadBasicInfo(c *gin.Context) {
 	}
 
 	cbi["uuid"] = uuid
-
+	// 如果没有传入 IP 信息，尝试从请求中获取
 	if (func() bool {
 		if v4, ok := cbi["ipv4"].(string); !ok || v4 == "" {
 			if v6, ok := cbi["ipv6"].(string); !ok || v6 == "" {
@@ -52,15 +52,15 @@ func UploadBasicInfo(c *gin.Context) {
 
 		switch ipType {
 		case 0:
-			cbi["ipv4"] = ip
+			cbi["ipv4"] = ipStr
 		case 1:
-			cbi["ipv6"] = ip
+			cbi["ipv6"] = ipStr
 		default:
 			break
 		}
 	}
 
-	if cfg, err := config.Get(); err == nil && cfg.GeoIpEnabled {
+	if cfg, err := config.GetAs[bool](config.GeoIpEnabledKey); err == nil && cfg {
 		if ipv4, ok := cbi["ipv4"].(string); ok && ipv4 != "" {
 			ip4 := net.ParseIP(ipv4)
 			ip4_record, _ := geoip.GetGeoInfo(ip4)

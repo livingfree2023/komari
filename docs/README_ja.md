@@ -1,5 +1,5 @@
+# Komari
 
-# Komari 
 ![Badge](https://hitscounter.dev/api/hit?url=https%3A%2F%2Fgithub.com%2Fkomari-monitor%2Fkomari&label=&icon=github&color=%23a370f7&message=&style=flat&tz=UTC)
 
 ![komari](https://socialify.git.ci/komari-monitor/komari/image?description=1&font=Inter&forks=1&issues=1&language=1&logo=https%3A%2F%2Fraw.githubusercontent.com%2Fkomari-monitor%2Fkomari-web%2Fd54ce1288df41ead08aa19f8700186e68028a889%2Fpublic%2Ffavicon.png&name=1&owner=1&pattern=Plus&pulls=1&stargazers=1&theme=Auto)
@@ -9,6 +9,7 @@ Komariは、サーバーのパフォーマンスを監視するためのシン�
 [ドキュメント](https://komari-document.pages.dev/) | [Telegramグループ](https://t.me/komari_monitor)
 
 ## 特徴
+
 - **軽量で効率的**: リソース消費が少なく、あらゆる規模のサーバーに適しています。
 - **自己ホスト型**: データプライバシーを完全に制御でき、展開も簡単です。
 - **Webインターフェース**: 直感的な監視ダッシュボードで、使いやすいです。
@@ -16,12 +17,19 @@ Komariは、サーバーのパフォーマンスを監視するためのシン�
 ## クイックスタート
 
 ### 0. クラウドホスティングによるワンクリック展開
-- Rainyun - CNY 4.5/月 
 
-[![](https://rainyun-apps.cn-nb1.rains3.com/materials/deploy-on-rainyun-cn.svg)](https://app.rainyun.com/apps/rca/store/6780/NzYxNzAz_) 
+- Rainyun - CNY 4.5/月
+
+[![](https://rainyun-apps.cn-nb1.rains3.com/materials/deploy-on-rainyun-cn.svg)](https://app.rainyun.com/apps/rca/store/6780/NzYxNzAz_)
+
+- 1Panel アプリストア
+
+1Panel アプリストアで利用可能です。「アプリストア」>「ユーティリティ」>「Komari」からインストールしてください。
 
 ### 1. ワンクリックインストールスクリプトを使用する
+
 systemdを使用するディストリビューション（Ubuntu、Debianなど）に適しています。
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/komari-monitor/komari/main/install-komari.sh -o install-komari.sh
 chmod +x install-komari.sh
@@ -29,6 +37,7 @@ sudo ./install-komari.sh
 ```
 
 ### 2. Docker展開
+
 1. データディレクトリを作成します:
    ```bash
    mkdir -p ./data
@@ -51,6 +60,7 @@ sudo ./install-komari.sh
 > 環境変数 `ADMIN_USERNAME` と `ADMIN_PASSWORD` を使用して、初期のユーザー名とパスワードをカスタマイズすることもできます。
 
 ### 3. バイナリファイル展開
+
 1. Komariの[GitHubリリース](https://github.com/komari-monitor/komari/releases)ページにアクセスして、お使いのオペレーティングシステム用の最新のバイナリをダウンロードします。
 2. Komariを実行します:
    ```bash
@@ -61,7 +71,6 @@ sudo ./install-komari.sh
 
 > [!NOTE]
 > バイナリに実行権限があることを確認してください（`chmod +x komari`）。データは実行ディレクトリの `data` フォルダに保存されます。
-
 
 ### 手動ビルド
 
@@ -81,28 +90,35 @@ sudo ./install-komari.sh
    git clone https://github.com/komari-monitor/komari
    cd komari
    ```
-   ステップ1で生成された静的ファイルを `komari` プロジェクトのルートにある `/public/dist` フォルダにコピーします。
-   ```bash 
+   ステップ1で生成された静的ファイルを `komari` プロジェクトのルートにある `/public/defaultTheme/dist` フォルダにコピーし、`komari-theme.json` と `preview.png`/`perview.png` を `/public/defaultTheme` にコピーします。
+   ```bash
    go build -o komari
    ```
-4. 実行:
+3. 実行:
    ```bash
    ./komari server -l 0.0.0.0:25774
    ```
    デフォルトのリスニングポートは `25774` です。`http://localhost:25774` にアクセスします。
 
 ## フロントエンド開発ガイド
+
 [Komariテーマ開発ガイド | Komari](https://komari-document.pages.dev/dev/theme.html)
 
 [CrowdinでKomariを翻訳する](https://crowdin.com/project/komari/invite?h=cd051bf172c9a9f7f1360e87ffb521692507706)
 
 ## クライアントエージェント開発ガイド
+
 [Komariエージェント情報レポートおよびイベント処理ドキュメント](https://komari-document.pages.dev/dev/agent.html)
 
 ## 貢献
+
 IssueやPull Requestを歓迎します！
 
 ## 謝辞
+
+### 破碎工坊云 (Crash Work)
+
+[破碎工坊云 - 効率的で安定した、安全な高防御サーバーとCDNソリューションを提供する専門的なクラウドコンピューティングプラットフォーム](https://www.crash.work/)
 
 ### DreamCloud
 
@@ -110,7 +126,7 @@ IssueやPull Requestを歓迎します！
 
 ### 🚀 SharonNetworks スポンサー
 
-[![Sharon Networks](https://raw.githubusercontent.com/komari-monitor/public/refs/heads/main/images/sharon-networks.webp)](https://sharon.io) 
+[![Sharon Networks](https://raw.githubusercontent.com/komari-monitor/public/refs/heads/main/images/sharon-networks.webp)](https://sharon.io)
 
 SharonNetworks は、あなたのビジネスの離陸を力強くサポートします！
 

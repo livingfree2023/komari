@@ -1,21 +1,21 @@
-package api
+package public
 
 import (
 	"fmt"
 	"slices"
 
 	"github.com/gin-gonic/gin"
+	"github.com/komari-monitor/komari/config"
 	"github.com/komari-monitor/komari/database/accounts"
 	"github.com/komari-monitor/komari/database/auditlog"
-	"github.com/komari-monitor/komari/database/config"
 	"github.com/komari-monitor/komari/utils"
 	"github.com/komari-monitor/komari/utils/oauth"
 )
 
 // /api/oauth
 func OAuth(c *gin.Context) {
-	cfg, _ := config.Get()
-	if !cfg.OAuthEnabled {
+	OAuthEnabled, _ := config.GetAs[bool](config.OAuthEnabledKey, false)
+	if !OAuthEnabled {
 		c.JSON(403, gin.H{"status": "error", "error": "OAuth is not enabled"})
 		return
 	}

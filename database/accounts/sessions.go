@@ -6,7 +6,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/komari-monitor/komari/database/config"
+	"github.com/komari-monitor/komari/config"
 	"github.com/komari-monitor/komari/database/dbcore"
 	"github.com/komari-monitor/komari/database/models"
 	messageevent "github.com/komari-monitor/komari/database/models/messageEvent"
@@ -39,21 +39,23 @@ func CreateSession(uuid string, expires int, userAgent, ip, login_method string)
 		LoginMethod:  login_method,
 		LatestOnline: models.FromTime(time.Now()),
 	}
-	cfg, _ := config.Get()
-	if cfg.LoginNotification {
-		ipAddr := net.ParseIP(ip)
-		ipinfo, _ := geoip.GetGeoInfo(ipAddr)
-		loc := "unknown"
-		if ipinfo != nil {
-			loc = ipinfo.Name
+	go func() {
+		LoginNotification, _ := config.GetAs[bool](config.LoginNotificationKey, false)
+		if LoginNotification {
+			ipAddr := net.ParseIP(ip)
+			ipinfo, _ := geoip.GetGeoInfo(ipAddr)
+			loc := "unknown"
+			if ipinfo != nil && ipinfo.Name != "" {
+				loc = ipinfo.Name
+			}
+			messageSender.SendEvent(models.EventMessage{
+				Event:   messageevent.Login,
+				Time:    time.Now(),
+				Message: fmt.Sprintf("%s: %s (%s)\n%s", login_method, ip, loc, userAgent),
+				Emoji:   "🔑",
+			})
 		}
-		messageSender.SendEvent(models.EventMessage{
-			Event:   messageevent.Login,
-			Time:    time.Now(),
-			Message: fmt.Sprintf("%s: %s (%s)\n%s", login_method, ip, loc, userAgent),
-			Emoji:   "🔑",
-		})
-	}
+	}()
 
 	err := db.Create(&sessionRecord).Error
 	if err != nil {
